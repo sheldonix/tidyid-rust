@@ -1,0 +1,275 @@
+#![forbid(unsafe_code)]
+
+use std::error::Error;
+use std::fmt::Write as _;
+use std::fs;
+use std::io;
+use std::path::Path;
+
+use tidyid::{DIGITS, LETTERS, LETTERS_WITH_UPPERCASE, get_id_capacity, get_id_entropy, tidyid};
+
+const ID_COUNT: usize = 10_000_000;
+const ID_LENGTH: usize = 3;
+const UNIFORMITY_SPAN: f64 = 1.0;
+const METRIC_LENGTHS: [usize; 6] = [8, 10, 12, 16, 23, 32];
+const TABLE_BEGIN: &str = "<!-- BEGIN GENERATED CAPACITY TABLES -->";
+const TABLE_END: &str = "<!-- END GENERATED CAPACITY TABLES -->";
+
+#[derive(Clone, Copy)]
+struct Frequency {
+    character: char,
+    percent: f64,
+}
+
+fn sample(allow_uppercase: bool) -> Result<([u64; 256], [u64; 256]), Box<dyn Error>> {
+    let mut letters = [0_u64; 256];
+    let mut digits = [0_u64; 256];
+    for _ in 0..ID_COUNT {
+        let id = tidyid(ID_LENGTH, allow_uppercase)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let bytes = id.as_bytes();
+        letters[usize::from(bytes[0])] += 1;
+        letters[usize::from(bytes[1])] += 1;
+        digits[usize::from(bytes[2])] += 1;
+    }
+    assert_eq!(letters.iter().sum::<u64>(), (ID_COUNT * 2) as u64);
+    assert_eq!(digits.iter().sum::<u64>(), ID_COUNT as u64);
+    Ok((letters, digits))
+}
+
+fn frequencies(alphabet: &str, counts: &[u64; 256], total: usize) -> Vec<Frequency> {
+    let expected = total as f64 / alphabet.len() as f64;
+    alphabet
+        .bytes()
+        .map(|character| Frequency {
+            character: char::from(character),
+            percent: counts[usize::from(character)] as f64 / expected * 100.0,
+        })
+        .collect()
+}
+
+fn plot_points(
+    series: &[Frequency],
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+) -> Vec<(f64, f64)> {
+    series
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let x = left + index as f64 / (series.len() - 1) as f64 * (right - left);
+            let y = top
+                + (100.0 + UNIFORMITY_SPAN - value.percent) / (UNIFORMITY_SPAN * 2.0)
+                    * (bottom - top);
+            (x, y)
+        })
+        .collect()
+}
+
+fn polyline(points: &[(f64, f64)]) -> String {
+    points
+        .iter()
+        .map(|(x, y)| format!("{x:.1},{y:.1}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn circles(points: &[(f64, f64)]) -> String {
+    let mut output = String::new();
+    for (x, y) in points {
+        write!(output, "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"2.5\"/>").unwrap();
+    }
+    output
+}
+
+fn labels(series: &[Frequency], points: &[(f64, f64)], y: u32) -> String {
+    let mut output = String::new();
+    for (value, (x, _)) in series.iter().zip(points) {
+        write!(
+            output,
+            "<text x=\"{x:.1}\" y=\"{y}\">{}</text>",
+            value.character
+        )
+        .unwrap();
+    }
+    output
+}
+
+fn grid(left: u32, right: u32, top: u32, bottom: u32) -> String {
+    let middle = (top + bottom) / 2;
+    format!(
+        r#"
+  <line class="grid" x1="{left}" y1="{top}" x2="{right}" y2="{top}"/>
+  <line class="expected" x1="{left}" y1="{middle}" x2="{right}" y2="{middle}"/>
+  <line class="grid" x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}"/>
+  <text class="muted" x="20" y="{}">{:.0}%</text>
+  <text class="muted" x="20" y="{}">100%</text>
+  <text class="muted" x="20" y="{}">{:.0}%</text>"#,
+        top + 4,
+        100.0 + UNIFORMITY_SPAN,
+        middle + 4,
+        bottom + 4,
+        100.0 - UNIFORMITY_SPAN,
+    )
+}
+
+const STYLE: &str = r#"
+  <style>
+    text { fill: #24292f; font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif }
+    .muted { fill: #57606a }
+    .grid { stroke: #d0d7de; stroke-width: 1 }
+    .expected { stroke: #57606a; stroke-width: 1; stroke-dasharray: 4 4 }
+    .series { fill: none; stroke: #0969da; stroke-width: 2 }
+    .point { fill: #0969da }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #f0f6fc }
+      .muted { fill: #8c959f }
+      .grid { stroke: #30363d }
+      .expected { stroke: #8c959f }
+      .series { stroke: #58a6ff }
+      .point { fill: #58a6ff }
+    }
+  </style>"#;
+
+fn render_svg(
+    allow_uppercase: bool,
+    letter_series: &[Frequency],
+    digit_series: &[Frequency],
+) -> String {
+    let (letter_right, digit_left, digit_title_x, label_size) = if allow_uppercase {
+        (520.0, 550.0, 535, 11)
+    } else {
+        (340.0, 394.0, 394, 12)
+    };
+    let letter_points = plot_points(letter_series, 54.0, letter_right, 87.0, 197.0);
+    let digit_points = plot_points(digit_series, digit_left, 660.0, 87.0, 197.0);
+    let mode = if allow_uppercase { "true" } else { "false" };
+    let letter_mode = if allow_uppercase {
+        "uppercase + lowercase"
+    } else {
+        "lowercase"
+    };
+    let id_count = comma_separated(ID_COUNT);
+    let letter_sample_count = comma_separated(ID_COUNT * 2);
+    format!(
+        r#"<!-- Generated by the Rust example `generate_readme_data`: {id_count} IDs per mode. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="250" viewBox="0 0 680 250" role="img" aria-labelledby="title description">
+  <title id="title">Rust TidyID character distribution with allow_uppercase set to {mode}</title>
+  <desc id="description">Observed frequency as a percentage of expected uniform frequency for {id_count} Rust tidyid calls with length 3 and allow_uppercase set to {mode}.</desc>{STYLE}
+  <text x="20" y="24" font-size="15" font-weight="600">Observed Rust character frequency · allow_uppercase = {mode}</text>
+  <text class="muted" x="20" y="43">{id_count} × Rust tidyid(3, {mode})</text>
+  <text x="54" y="67" font-weight="600">Letters ({letter_mode}) · {letter_sample_count} samples</text>
+  <text x="{digit_title_x}" y="67" font-weight="600">Digits · {id_count} samples</text>{}
+  <line class="grid" x1="{digit_left}" y1="87" x2="660" y2="87"/>
+  <line class="expected" x1="{digit_left}" y1="142" x2="660" y2="142"/>
+  <line class="grid" x1="{digit_left}" y1="197" x2="660" y2="197"/>
+  <polyline class="series" points="{}"/>
+  <g class="point">{}</g>
+  <polyline class="series" points="{}"/>
+  <g class="point">{}</g>
+  <g class="muted" text-anchor="middle" style="font-size:{label_size}px">{}{}</g>
+</svg>
+"#,
+        grid(54, letter_right as u32, 87, 197),
+        polyline(&letter_points),
+        circles(&letter_points),
+        polyline(&digit_points),
+        circles(&digit_points),
+        labels(letter_series, &letter_points, 218),
+        labels(digit_series, &digit_points, 218),
+    )
+}
+
+fn comma_separated(value: impl ToString) -> String {
+    let digits = value.to_string();
+    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            output.push(',');
+        }
+        output.push(character);
+    }
+    output
+}
+
+fn metric_table() -> Result<String, Box<dyn Error>> {
+    let mut output = String::from("\n");
+    for (title, allow_uppercase) in [
+        ("Default mode (`allow_uppercase = false`)", false),
+        ("Uppercase allowed (`allow_uppercase = true`)", true),
+    ] {
+        writeln!(output, "  > **{title}**")?;
+        writeln!(output, "  >")?;
+        writeln!(output, "  > | Length | Capacity | Entropy |")?;
+        writeln!(output, "  > | ---: | ---: | ---: |")?;
+        for length in METRIC_LENGTHS {
+            let capacity = comma_separated(get_id_capacity(length, allow_uppercase)?);
+            let entropy = get_id_entropy(length, allow_uppercase)?;
+            writeln!(output, "  > | {length} | {capacity} | {entropy:.2} bits |")?;
+        }
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn update_readme(table: &str) -> Result<(), Box<dyn Error>> {
+    let readme_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
+    let readme = fs::read_to_string(&readme_path)?;
+    let begin = readme
+        .find(TABLE_BEGIN)
+        .ok_or("missing generated-table start marker")?;
+    let content_start = begin + TABLE_BEGIN.len();
+    let relative_end = readme[content_start..]
+        .find(TABLE_END)
+        .ok_or("missing generated-table end marker")?;
+    let content_end = content_start + relative_end;
+    let updated = format!(
+        "{}{}\n{}{}",
+        &readme[..content_start],
+        table.trim_end(),
+        TABLE_END,
+        &readme[content_end + TABLE_END.len()..],
+    );
+    fs::write(readme_path, updated)?;
+    Ok(())
+}
+
+fn maximum_deviation(series: &[Frequency]) -> f64 {
+    series
+        .iter()
+        .map(|value| (value.percent - 100.0).abs())
+        .fold(0.0, f64::max)
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let (default_letters, default_digits) = sample(false)?;
+    let (uppercase_letters, uppercase_digits) = sample(true)?;
+    let default_letter_series = frequencies(LETTERS, &default_letters, ID_COUNT * 2);
+    let default_digit_series = frequencies(DIGITS, &default_digits, ID_COUNT);
+    let uppercase_letter_series =
+        frequencies(LETTERS_WITH_UPPERCASE, &uppercase_letters, ID_COUNT * 2);
+    let uppercase_digit_series = frequencies(DIGITS, &uppercase_digits, ID_COUNT);
+
+    let media = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/media");
+    fs::create_dir_all(&media)?;
+    fs::write(
+        media.join("uniformity-default.svg"),
+        render_svg(false, &default_letter_series, &default_digit_series),
+    )?;
+    fs::write(
+        media.join("uniformity-allow-uppercase.svg"),
+        render_svg(true, &uppercase_letter_series, &uppercase_digit_series),
+    )?;
+    update_readme(&metric_table()?)?;
+
+    let default_deviation =
+        maximum_deviation(&default_letter_series).max(maximum_deviation(&default_digit_series));
+    let uppercase_deviation =
+        maximum_deviation(&uppercase_letter_series).max(maximum_deviation(&uppercase_digit_series));
+    println!("ids_per_mode={ID_COUNT}");
+    println!("default_maximum_deviation={default_deviation:.6}%");
+    println!("uppercase_maximum_deviation={uppercase_deviation:.6}%");
+    Ok(())
+}
