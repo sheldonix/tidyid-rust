@@ -1,9 +1,13 @@
-# TidyID
+<p align="center">
+  <img src="docs/media/logo-128.png" alt="TidyID" height="64">
+</p>
 
-[![crates.io version](https://img.shields.io/crates/v/tidyid.svg)](https://crates.io/crates/tidyid)
-[![docs.rs](https://img.shields.io/docsrs/tidyid)](https://docs.rs/tidyid)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-93450a.svg?logo=rust)](https://www.rust-lang.org/)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/sheldonix/tidyid-rust/blob/main/LICENSE)
+<p align="center">
+  <a href="https://crates.io/crates/tidyid"><img src="https://img.shields.io/crates/v/tidyid.svg" alt="crates.io version"></a>
+  <a href="https://docs.rs/tidyid"><img src="https://img.shields.io/docsrs/tidyid" alt="docs.rs"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.85%2B-93450a.svg?logo=rust" alt="Rust 1.85+"></a>
+  <a href="https://github.com/sheldonix/tidyid-rust/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
 
 A secure, high-performance, and human-friendly ID generator for Rust.
 
@@ -119,7 +123,6 @@ including secure random sampling and `String` allocation.
 
   *Uppercase-enabled mode (`allow_uppercase = true`): observed letter and digit frequencies from 10,000,000 generated 3-character IDs stay close to their expected uniform distribution.*
 
-- **Fail closed** Random-source failures are propagated as `GenerateError::Random`. TidyID never falls back to predictable randomness.
 - **Collision-aware** Choose a length for your scale to make collisions extremely unlikely. Use a database `PRIMARY KEY` or `UNIQUE` constraint when absolute uniqueness must be enforced.
 
 <!-- BEGIN GENERATED CAPACITY TABLES -->
